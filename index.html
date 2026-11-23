@@ -11,7 +11,7 @@ html{scroll-padding-top:env(safe-area-inset-top,0px)}
 html,body{height:100%;margin:0;overflow:hidden;background:var(--bg);color:var(--ink);font-family:"Inter Tight","Helvetica Neue",Arial,sans-serif}
 button,input,textarea,select{font:inherit}button{border:0;cursor:pointer}
 button:focus-visible,input:focus-visible,textarea:focus-visible{outline:3px solid currentColor;outline-offset:3px}
-.red{--b:#e8332b;--f:#fff}.dark{--b:#1b1b1d;--f:#f4f4f4}.white{--b:#f6f6f4;--f:#111}
+.red{--b:#e8332b;--f:#fff}.dark{--b:#1b1b1d;--f:#f4f4f4}.white{--b:#f6f6f4;--f:#111}.blue-0d47a1{--b:#0D47A1;--f:#fff}.blue-2e6fa0{--b:#2E6FA0;--f:#fff}.gold-ffe08f{--b:#FFE08F;--f:#111}
 #stage{position:fixed;inset:0;overflow:hidden;touch-action:none;transition:transform 1.1s cubic-bezier(.77,0,.18,1),filter 1.1s cubic-bezier(.77,0,.18,1)}
 #stage::after{content:"";position:absolute;inset:auto 0 0;height:26%;background:linear-gradient(transparent,var(--fade));pointer-events:none;z-index:200}
 #col{position:absolute;inset:0}
@@ -80,7 +80,7 @@ h2{margin:18px 0 0;font-size:clamp(24px,3.5vw,38px);letter-spacing:-.03em}
 <label>Question<textarea name="p" required rows="4" maxlength="1500"></textarea></label>
 <label>Maximum marks<input name="m" type="number" min="1" step="0.5" value="15" required></label>
 <label>Deadline<input name="dl" type="datetime-local"></label>
-<label>Stack colour<select name="t"><option value="red">Red</option><option value="dark">Dark</option><option value="white">White</option></select></label>
+<label>Stack colour<select name="t"><option value="red">Red</option><option value="dark">Dark</option><option value="white">White</option><option value="blue-0d47a1">Deep blue · #0D47A1</option><option value="blue-2e6fa0">Steel blue · #2E6FA0</option><option value="gold-ffe08f">Soft gold · #FFE08F</option></select></label>
 <div class="fl"><button class="btn">Publish</button><button type="button" class="btn s" id="fc">Cancel</button></div></form></div>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
 <script src="config.js"></script>
