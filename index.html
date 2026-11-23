@@ -83,6 +83,7 @@ h2{margin:18px 0 0;font-size:clamp(24px,3.5vw,38px);letter-spacing:-.03em}
 <label>Stack colour<select name="t"><option value="red">Red</option><option value="dark">Dark</option><option value="white">White</option><option value="blue-0d47a1">Deep blue · #0D47A1</option><option value="blue-2e6fa0">Steel blue · #2E6FA0</option><option value="gold-ffe08f">Soft gold · #FFE08F</option></select></label>
 <div class="fl"><button class="btn">Publish</button><button type="button" class="btn s" id="fc">Cancel</button></div></form></div>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tus-js-client@4.3.1/dist/tus.min.js"></script>
 <script src="config.js"></script>
 <script>
 const $=s=>document.querySelector(s),esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -159,21 +160,89 @@ function renderSubs(){
     const adminDelete=e.querySelector('[data-delete-sub]');if(adminDelete)adminDelete.onclick=async ev=>{ev.stopPropagation();if(!confirm('Permanently delete this submission and its discussion?'))return;const {error}=await sb.from('submissions').delete().eq('id',s.id);if(error){alert(error.message);return;}await loadAll();};
     e.style.cursor="pointer";e.tabIndex=0;e.setAttribute("role","button");e.setAttribute("aria-label","Read answer by "+s.who);e.onclick=()=>openRd(s);e.onkeydown=ev=>{if(ev.key==="Enter")openRd(s)};box.appendChild(e)});
 }
+// Mobile-friendly image preparation. If the browser cannot decode a format (for
+// example some HEIC files), keep the original and let Storage report a clear error.
+async function prepareAnswerFile(file){
+  if(!file.type.startsWith("image/") || file.size < 1.5*1024*1024 || !("createImageBitmap" in window)) return file;
+  let bitmap;
+  try { bitmap = await createImageBitmap(file); } catch { return file; }
+  try {
+    const maxSide=2200, scale=Math.min(1,maxSide/Math.max(bitmap.width,bitmap.height));
+    const canvas=document.createElement("canvas");
+    canvas.width=Math.max(1,Math.round(bitmap.width*scale));
+    canvas.height=Math.max(1,Math.round(bitmap.height*scale));
+    const ctx=canvas.getContext("2d");
+    if(!ctx) return file;
+    ctx.drawImage(bitmap,0,0,canvas.width,canvas.height);
+    const blob=await new Promise(resolve=>canvas.toBlob(resolve,"image/jpeg",0.82));
+    if(!blob || blob.size>=file.size) return file;
+    const base=file.name.replace(/\.[^.]+$/,'')||'answer-image';
+    return new File([blob],base+'.jpg',{type:'image/jpeg',lastModified:Date.now()});
+  } finally { bitmap.close?.(); }
+}
+
+function uploadAnswerFile(file,path,session,onProgress){
+  // TUS resumable uploads are substantially more reliable for large files and
+  // mobile connections that may briefly drop. Supabase recommends TUS for >6 MB.
+  if(file.size > 6*1024*1024){
+    if(!window.tus) return Promise.reject(new Error('Resumable upload library did not load. Check your internet connection and refresh the page.'));
+    return new Promise((resolve,reject)=>{
+      const upload=new tus.Upload(file,{
+        endpoint:CFG.url.replace(/\/$/,'')+'/storage/v1/upload/resumable',
+        retryDelays:[0,1000,3000,5000,10000,20000],
+        chunkSize:6*1024*1024,
+        headers:{authorization:'Bearer '+session.access_token,apikey:CFG.key},
+        metadata:{bucketName:'answers',objectName:path,contentType:file.type||'application/octet-stream',cacheControl:'3600'},
+        uploadDataDuringCreation:true,
+        removeFingerprintOnSuccess:true,
+        onError:error=>reject(error),
+        onProgress:(sent,total)=>onProgress(Math.round(sent/total*100)),
+        onSuccess:()=>resolve()
+      });
+      upload.findPreviousUploads().then(previous=>{
+        if(previous.length) upload.resumeFromPreviousUpload(previous[0]);
+        upload.start();
+      }).catch(reject);
+    });
+  }
+  return sb.storage.from('answers').upload(path,file,{contentType:file.type||'application/octet-stream',cacheControl:'3600'}).then(({error})=>{
+    if(error) throw error;
+    onProgress(100);
+  });
+}
+
 async function send(f,d){
-  const m=pg.querySelector("#am"),files=[...f.f.files],who=f.who.value.trim(),answerText=f.answer.value.trim();
+  const m=pg.querySelector("#am"),submitButton=f.querySelector(".btn");
+  let files=[...f.f.files];
+  const who=f.who.value.trim(),answerText=f.answer.value.trim();
   if(!who){m.textContent="Enter your name before submitting.";f.who.focus();return}
   if(guestMode&&f.guestEmail&&f.guestEmail.value.trim()&&!f.guestEmail.checkValidity()){m.textContent="Enter a valid email address or leave it blank.";f.guestEmail.focus();return}
   if(!files.length&&!answerText){m.textContent="Write your answer or upload at least one PDF/image.";return}
-  for(const x of files)if(!/^(application\/pdf|image\/(jpeg|png|webp))$/.test(x.type)||x.size>20*1048576){m.textContent=`“${x.name}” must be a PDF/JPG/PNG/WEBP under 20 MB.`;return}
-  f.querySelector(".btn").disabled=true;
+  for(const x of files){
+    const supported=/^(application\/pdf|image\/(jpeg|png|webp))$/.test(x.type);
+    if(!supported){m.textContent=`“${x.name}” has an unsupported format (${x.type||'unknown'}). Please choose a PDF, JPG, PNG or WEBP file.`;return}
+    if(x.size>20*1024*1024){m.textContent=`“${x.name}” is larger than 20 MB. Please reduce the file size and try again.`;return}
+  }
+  submitButton.disabled=true;
+  const originalLabel=submitButton.textContent;
   try{
-    const out=[],run=Date.now(),folder=guestMode?`guest/${crypto.randomUUID()}`:me.id;
+    const sessionResult=await sb.auth.getSession();
+    const session=sessionResult.data?.session;
+    if(!session) throw new Error('Your session has expired. Sign in again, then retry your submission.');
+    // Anonymous Supabase users also have a real auth UID. Storage RLS expects
+    // the first folder segment to equal that UID for both guests and members.
+    const folder=me.id;
+    const out=[],run=Date.now();
     for(let i=0;i<files.length;i++){
-      m.textContent=`Uploading ${i+1} of ${files.length}…`;
-      const path=`${folder}/${d.id}/${run}_${i}_${files[i].name.replace(/[^\w.-]/g,"_")}`;
-      const u=await sb.storage.from("answers").upload(path,files[i],{contentType:files[i].type});if(u.error)throw u.error;
-      out.push({u:sb.storage.from("answers").getPublicUrl(path).data.publicUrl,t:files[i].type,n:files[i].name})
+      m.textContent=`Preparing file ${i+1} of ${files.length} for upload…`;
+      const file=await prepareAnswerFile(files[i]);
+      const safeName=file.name.replace(/[^\w.-]/g,"_");
+      const path=`${folder}/${d.id}/${run}_${i}_${safeName}`;
+      m.textContent=`Uploading ${i+1} of ${files.length}: 0%`;
+      await uploadAnswerFile(file,path,session,pct=>{m.textContent=`Uploading ${i+1} of ${files.length}: ${pct}%`;});
+      out.push({u:sb.storage.from("answers").getPublicUrl(path).data.publicUrl,t:file.type,n:file.name});
     }
+    m.textContent='Saving your submission…';
     const now=Date.now(),payload={stack_id:d.id,user_id:me.id,who,answer_text:answerText,note:f.note.value.trim(),files:out,late:!!(d.dl&&now>new Date(d.dl).getTime()),created_at:new Date(now).toISOString()};
     let r,submissionId=null,contactSaved=true;
     if(guestMode){
@@ -186,11 +255,19 @@ async function send(f,d){
       r=await sb.from("submissions").upsert(payload,{onConflict:"stack_id,user_id"});
       if(r.error)throw r.error;
     }
-    await loadAll();
-    m.textContent=guestMode?(contactSaved?"Your answer has been submitted as a guest. Thank you!":"Your answer was submitted, but your optional contact email could not be saved."):"Submitted. Submitting again replaces your earlier answer.";
+    // Confirm immediately after the database write. A slow follow-up list refresh
+    // must not make a successfully saved answer look as if it is still uploading.
+    m.textContent=guestMode?(contactSaved?"Your answer has been submitted as a guest. Thank you!":"Your answer was submitted, but your optional contact email could not be saved.") : "Your answer has been submitted successfully. Submitting again replaces your earlier answer.";
     f.f.value="";if(f.guestEmail)f.guestEmail.value="";
-  }catch(e){m.textContent="Upload failed: "+(e.message||"try again")}
-  f.querySelector(".btn").disabled=false;
+    loadAll().catch(error=>console.warn('Submission saved, but answer list refresh failed:',error));
+  }catch(e){
+    console.error('Answer submission failed:',e);
+    const message=e?.message||String(e)||'Unknown upload error';
+    m.textContent="Submission failed: "+message+". Your text is still in the form; check your connection and try again.";
+  }finally{
+    submitButton.disabled=false;
+    submitButton.textContent=originalLabel;
+  }
 }
 async function openRd(s){
   const r=$("#rd"),b=r.querySelector(".pg");
