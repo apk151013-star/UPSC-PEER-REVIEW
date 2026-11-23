@@ -70,7 +70,8 @@ h2{margin:18px 0 0;font-size:clamp(24px,3.5vw,38px);letter-spacing:-.03em}
 <button type="button" id="fp" style="background:none;color:#111;text-decoration:underline;justify-self:start;padding:0">Forgot password?</button>
 <button type="button" id="re" style="background:none;color:#111;text-decoration:underline;justify-self:start;padding:0">Resend confirmation email</button>
 <div class="msg" id="vstatus" role="status" aria-live="polite" style="font-weight:500"></div>
-<div class="msg" id="aum" role="status" aria-live="polite"></div></form></div>
+<div class="msg" id="aum" role="status" aria-live="polite"></div>
+<div style="border-top:1px solid #ddd;padding-top:12px;display:grid;gap:8px"><span style="font-size:13px;color:#555">Want to try the platform without an account?</span><button type="button" class="btn s" id="guestEntry" style="color:#111;justify-self:stretch">Continue as Guest</button></div></form></div>
 <div id="rd"><button class="x">Close</button><div class="pg"></div></div>
 <div id="fm"><form class="box" id="qf"><h3>Post a question</h3>
 <label>Paper / label<input name="l" required maxlength="30" placeholder="GS Paper II"></label>
@@ -85,7 +86,7 @@ h2{margin:18px 0 0;font-size:clamp(24px,3.5vw,38px);letter-spacing:-.03em}
 <script>
 const $=s=>document.querySelector(s),esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const col=$("#col"),st=$("#stage"),RM=matchMedia("(prefers-reduced-motion:reduce)").matches;
-let me={id:null,name:""},admin=false,stacks=[],subs=[],cs=[],n=0,openId=null,pg=null,busy=false,ox=0,oy=0;
+let me={id:null,name:""},admin=false,guestMode=false,stacks=[],subs=[],cs=[],n=0,openId=null,pg=null,busy=false,ox=0,oy=0;
 let pos=0,tg=0,G=200,dn=false,ly=0,moved=0,idle;
 const fmt=t=>t?new Date(t).toLocaleString([], {dateStyle:"medium",timeStyle:"short"}):"";
 function rebuild(){
@@ -127,6 +128,8 @@ function show(i,x,y){
   <div class="r" style="--d:4;display:grid;gap:12px">
   <h2>Submit your answer</h2>
   <form class="box" id="af"><label>Post as<input name="who" maxlength="40" required placeholder="Your name or an alias"></label>
+  ${guestMode?`<label>Email (optional; visible only to the site admin)<input name="guestEmail" type="email" maxlength="254" autocomplete="email" placeholder="you@example.com"></label>`:""}
+  <label>Typed answer (optional)<textarea name="answer" rows="8" maxlength="10000" placeholder="Write your answer here…"></textarea></label>
   <label>Answer files (PDF or images, several pages allowed)<input name="f" type="file" multiple accept="application/pdf,image/jpeg,image/png,image/webp"></label>
   <label>Note (optional)<textarea name="note" rows="2" maxlength="600"></textarea></label>
   <button class="btn">Submit answer</button><div class="msg" id="am"></div></form>
@@ -151,27 +154,45 @@ function renderSubs(){
   const l=subs.filter(s=>s.sid===openId).sort((a,b)=>b.at-a.at);
   box.innerHTML=l.length?"":`<div style="opacity:.8">No answers yet. Be the first.</div>`;
   l.forEach(s=>{const e=document.createElement("div");e.className="sub";
-    e.innerHTML=`<div class="h"><span>${esc(s.who)}</span><small>${esc(fmt(s.at))}${s.late?" · late":""}</small></div>${s.note?`<div>${esc(s.note)}</div>`:""}${s.files[0]&&s.files[0].t!=="application/pdf"?`<img src="${esc(s.files[0].u)}" alt="" style="width:100%;max-height:220px;object-fit:cover;object-position:top;border-radius:8px">`:""}<div class="fl"><button class="btn">Read answer (${s.files.length} file${s.files.length==1?"":"s"})</button></div>`;
+    e.innerHTML=`<div class="h"><span>${esc(s.who)}</span><small>${esc(fmt(s.at))}${s.late?" · late":""}</small></div>${s.answer?`<div style="white-space:pre-wrap;line-height:1.5">${esc(s.answer)}</div>`:""}${s.note?`<div>${esc(s.note)}</div>`:""}${s.files[0]&&s.files[0].t!=="application/pdf"?`<img src="${esc(s.files[0].u)}" alt="" style="width:100%;max-height:220px;object-fit:cover;object-position:top;border-radius:8px">`:""}<div class="fl"><button class="btn">Read answer (${s.files.length} file${s.files.length==1?"":"s"})</button></div>`;
     e.style.cursor="pointer";e.tabIndex=0;e.setAttribute("role","button");e.setAttribute("aria-label","Read answer by "+s.who);e.onclick=()=>openRd(s);e.onkeydown=ev=>{if(ev.key==="Enter")openRd(s)};box.appendChild(e)});
 }
 async function send(f,d){
-  const m=pg.querySelector("#am"),files=[...f.f.files];
-  if(!files.length){m.textContent="Choose at least one PDF or image.";return}
+  const m=pg.querySelector("#am"),files=[...f.f.files],who=f.who.value.trim(),answerText=f.answer.value.trim();
+  if(!who){m.textContent="Enter your name before submitting.";f.who.focus();return}
+  if(guestMode&&f.guestEmail&&f.guestEmail.value.trim()&&!f.guestEmail.checkValidity()){m.textContent="Enter a valid email address or leave it blank.";f.guestEmail.focus();return}
+  if(!files.length&&!answerText){m.textContent="Write your answer or upload at least one PDF/image.";return}
   for(const x of files)if(!/^(application\/pdf|image\/(jpeg|png|webp))$/.test(x.type)||x.size>20*1048576){m.textContent=`“${x.name}” must be a PDF/JPG/PNG/WEBP under 20 MB.`;return}
   f.querySelector(".btn").disabled=true;
-  try{const out=[],run=Date.now();for(let i=0;i<files.length;i++){m.textContent=`Uploading ${i+1} of ${files.length}…`;
-      const path=`${me.id}/${d.id}/${run}_${i}_${files[i].name.replace(/[^\w.-]/g,"_")}`;
+  try{
+    const out=[],run=Date.now(),folder=guestMode?`guest/${crypto.randomUUID()}`:me.id;
+    for(let i=0;i<files.length;i++){
+      m.textContent=`Uploading ${i+1} of ${files.length}…`;
+      const path=`${folder}/${d.id}/${run}_${i}_${files[i].name.replace(/[^\w.-]/g,"_")}`;
       const u=await sb.storage.from("answers").upload(path,files[i],{contentType:files[i].type});if(u.error)throw u.error;
-      out.push({u:sb.storage.from("answers").getPublicUrl(path).data.publicUrl,t:files[i].type,n:files[i].name})}
-    const now=Date.now(),r=await sb.from("submissions").upsert({stack_id:d.id,user_id:me.id,who:f.who.value.trim(),note:f.note.value.trim(),files:out,late:!!(d.dl&&now>new Date(d.dl).getTime()),created_at:new Date(now).toISOString()},{onConflict:"stack_id,user_id"});
-    if(r.error)throw r.error;await loadAll();
-    m.textContent="Submitted. Submitting again replaces your earlier answer.";f.f.value=""}
-  catch(e){m.textContent="Upload failed: "+(e.message||"try again")}
+      out.push({u:sb.storage.from("answers").getPublicUrl(path).data.publicUrl,t:files[i].type,n:files[i].name})
+    }
+    const now=Date.now(),payload={stack_id:d.id,user_id:guestMode?null:me.id,who,answer_text:answerText,note:f.note.value.trim(),files:out,late:!!(d.dl&&now>new Date(d.dl).getTime()),created_at:new Date(now).toISOString()};
+    let r,submissionId=null,contactSaved=true;
+    if(guestMode){
+      r=await sb.from("submissions").insert(payload).select("id").single();
+      if(r.error)throw r.error;
+      submissionId=r.data.id;
+      const contact=f.guestEmail?f.guestEmail.value.trim():"";
+      if(contact){const cr=await sb.from("submission_contacts").insert({submission_id:submissionId,email:contact});if(cr.error){contactSaved=false;console.warn("Optional contact email was not saved",cr.error)}}
+    }else{
+      r=await sb.from("submissions").upsert(payload,{onConflict:"stack_id,user_id"});
+      if(r.error)throw r.error;
+    }
+    await loadAll();
+    m.textContent=guestMode?(contactSaved?"Your answer has been submitted as a guest. Thank you!":"Your answer was submitted, but your optional contact email could not be saved."):"Submitted. Submitting again replaces your earlier answer.";
+    f.f.value="";if(f.guestEmail)f.guestEmail.value="";
+  }catch(e){m.textContent="Upload failed: "+(e.message||"try again")}
   f.querySelector(".btn").disabled=false;
 }
 function openRd(s){
   const r=$("#rd"),b=r.querySelector(".pg");
-  b.innerHTML=`<div><b>${esc(s.who)}</b> · ${esc(fmt(s.at))}${s.note?"<br>"+esc(s.note):""}</div>`;
+  b.innerHTML=`<div><b>${esc(s.who)}</b> · ${esc(fmt(s.at))}</div>${s.answer?`<div style="white-space:pre-wrap;line-height:1.6">${esc(s.answer)}</div>`:""}${s.note?`<div>${esc(s.note)}</div>`:""}`;
   s.files.forEach(f=>{const isPdf=f.t==="application/pdf",el=document.createElement(isPdf?"iframe":"img");el.src=f.u;if(!isPdf)el.alt=f.n;b.appendChild(el);
     const a=document.createElement("a");a.href=f.u;a.target="_blank";a.rel="noopener";a.style.color="#fff";a.textContent="Open "+f.n+" in a new tab";b.appendChild(a)});
   r.style.display="block";r.scrollTop=0;
@@ -188,18 +209,20 @@ async function loadAll(){
   const [a,b]=await Promise.all([sb.from("stacks").select("*").order("created_at"),sb.from("submissions").select("*").order("created_at",{ascending:false})]);
   if(a.error||b.error)return;
   stacks=a.data.map(x=>({id:x.id,l:x.label,title:x.title,p:x.body,m:x.max_marks,dl:x.deadline||"",t:x.color,at:+new Date(x.created_at)}));
-  subs=b.data.map(x=>({id:x.id,sid:x.stack_id,uid:x.user_id,who:x.who,note:x.note||"",files:x.files||[],at:+new Date(x.created_at),late:x.late}));
+  subs=b.data.map(x=>({id:x.id,sid:x.stack_id,uid:x.user_id,who:x.who,answer:x.answer_text||"",note:x.note||"",files:x.files||[],at:+new Date(x.created_at),late:x.late}));
   rebuild();
 }
 async function enter(session){
   const au=$("#au"),signedStatus=$("#signedStatus");
   if(!session){
+    guestMode=false;me={id:null,name:""};admin=false;
     au.style.display="grid";
     $("#so").style.display=$("#add").style.display="none";
     signedStatus.style.display="none";
     return;
   }
   au.style.display="none";
+  guestMode=false;
   const u=session.user;
   const verified=!!(u.email_confirmed_at||u.confirmed_at);
   me={id:u.id,name:(u.user_metadata&&u.user_metadata.full_name)||""};
@@ -355,6 +378,13 @@ $("#fp").onclick=async()=>{
   if(!e){setAuthMessage("Enter your email first.");return;}
   const r=await sb.auth.resetPasswordForEmail(e,{redirectTo:location.origin});
   setAuthMessage(r.error?r.error.message:"Password reset email requested. Check your inbox and spam folder.");
+};
+$("#guestEntry").onclick=async()=>{
+  guestMode=true;admin=false;me={id:null,name:""};
+  $("#au").style.display="none";$("#so").style.display="none";$("#add").style.display="none";
+  const status=$("#signedStatus");status.style.display="block";status.className="";status.textContent="Guest mode · submissions allowed";
+  $("#emsg").textContent="Browse questions and submit an answer as a guest.";
+  await loadAll();
 };
 $("#so").onclick=()=>sb.auth.signOut();
 sb.auth.onAuthStateChange((ev,session)=>{if(ev==="INITIAL_SESSION"||ev==="SIGNED_IN"||ev==="SIGNED_OUT")setTimeout(()=>enter(session),0)});
