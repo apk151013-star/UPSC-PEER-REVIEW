@@ -139,8 +139,8 @@ function show(i,x,y){
   p.style.clipPath=`circle(0px at ${x}px ${y}px)`;document.body.append(p);p.offsetWidth;
   p.style.clipPath=`circle(150vmax at ${x}px ${y}px)`;
   st.style.transformOrigin=`${x}px ${y}px`;st.style.transform="scale(1.4)";st.style.filter="blur(8px)";
-  p.querySelector(".back").onclick=hide;p.querySelector("[name=who]").value=me.name||"";
-  p.querySelector("#af").onsubmit=ev=>{ev.preventDefault();send(ev.target,d)};
+  p.querySelector(".back").onclick=hide;p.querySelector("[name=who]").value=localStorage.getItem("peerReviewDisplayName")||me.name||"";
+  p.querySelector("#af").onsubmit=ev=>{ev.preventDefault();localStorage.setItem("peerReviewDisplayName",ev.target.who.value.trim().slice(0,40));send(ev.target,d)};
   const del=p.querySelector("#del");if(del)del.onclick=async()=>{if(del.dataset.s!=="1"){del.dataset.s="1";del.textContent="Click again to confirm";return}
     await sb.from("stacks").delete().eq("id",d.id);await loadAll();hide()};
   setTimeout(()=>p.classList.add("on"),480);setTimeout(()=>busy=false,1120);renderSubs();
@@ -203,7 +203,7 @@ async function openRd(s){
 }
 async function renderDiscussion(submissionId){
   const root=$("#discussion");if(!root)return;root.dataset.submission=submissionId;
-  root.innerHTML='<h2 style="margin:0;font-size:26px">Reactions & discussion</h2><div id="reactionList" class="reacts"></div><h3 style="margin:8px 0 0">Comments</h3><div id="commentList"></div><form id="commentForm" class="comment-form"><div id="replyingTo" style="font-size:13px;color:#555"></div><input name="author" maxlength="40" required placeholder="Display name" value="${esc(me.name||"Guest")}" style="box-sizing:border-box;width:100%;border:1px solid #ccc;border-radius:8px;padding:10px"><textarea name="body" maxlength="2000" required placeholder="Share constructive feedback or ask a question..."></textarea><div class="fl"><button class="btn">Post comment</button><button type="button" class="tiny-btn" id="cancelReply" style="display:none">Cancel reply</button></div><div class="msg" id="commentMsg"></div></form>';
+  root.innerHTML=`<h2 style="margin:0;font-size:26px">Reactions & discussion</h2><div id="reactionList" class="reacts"></div><h3 style="margin:8px 0 0">Comments</h3><div id="commentList"></div><form id="commentForm" class="comment-form"><div id="replyingTo" style="font-size:13px;color:#555"></div><input name="author" maxlength="40" required placeholder="Display name" value="${esc(localStorage.getItem("peerReviewDisplayName")||me.name||"")}" style="box-sizing:border-box;width:100%;border:1px solid #ccc;border-radius:8px;padding:10px"><textarea name="body" maxlength="2000" required placeholder="Share constructive feedback or ask a question..."></textarea><div class="fl"><button class="btn">Post comment</button><button type="button" class="tiny-btn" id="cancelReply" style="display:none">Cancel reply</button></div><div class="msg" id="commentMsg"></div></form>`;
   const types=[['❤️','Helpful'],['👍','Good answer'],['💡','Insight'],['🔥','Excellent']];
   const [rr,cr]=await Promise.all([
     sb.from('submission_reactions').select('id,user_id,reaction').eq('submission_id',submissionId),
@@ -219,6 +219,7 @@ async function renderDiscussion(submissionId){
   if(!comments.length)list.innerHTML='<p style="color:#666">No comments yet. Start a constructive discussion.</p>';
   comments.forEach(c=>{const liked=likes.some(x=>x.comment_id===c.id&&x.user_id===me.id),count=likes.filter(x=>x.comment_id===c.id).length,own=c.user_id===me.id,canManage=own||admin;const el=document.createElement('article');el.className='comment'+(c.parent_id?' reply':'');el.innerHTML=`<div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap"><b>${esc(c.author_name)}</b><small>${esc(fmt(c.created_at))}</small></div><div style="white-space:pre-wrap;line-height:1.5">${esc(c.body)}</div><div class="comment-actions"><button class="tiny-btn" data-act="reply" data-id="${c.id}">Reply</button><button class="tiny-btn" data-act="like" data-id="${c.id}">${liked?'♥':'♡'} ${count}</button>${own?`<button class="tiny-btn" data-act="edit" data-id="${c.id}">Edit</button>`:''}${canManage?`<button class="tiny-btn" data-act="delete" data-id="${c.id}">${admin&&!own?'Admin delete':'Delete'}</button>`:''}</div>`;list.appendChild(el);});
   let parentId=null;const form=root.querySelector('#commentForm'),replyLabel=root.querySelector('#replyingTo'),cancel=root.querySelector('#cancelReply');
+  form.author.addEventListener("input",()=>localStorage.setItem("peerReviewDisplayName",form.author.value.trim().slice(0,40)));
   list.onclick=async ev=>{const btn=ev.target.closest('button[data-act]');if(!btn)return;const c=comments.find(x=>x.id===btn.dataset.id);if(!c)return;const act=btn.dataset.act;
     if(act==='reply'){parentId=c.id;replyLabel.textContent='Replying to '+c.author_name;cancel.style.display='inline-block';form.body.focus();}
     if(act==='like'){const existing=likes.some(x=>x.comment_id===c.id&&x.user_id===me.id);const res=existing?await sb.from('comment_likes').delete().eq('comment_id',c.id).eq('user_id',me.id):await sb.from('comment_likes').insert({comment_id:c.id,user_id:me.id});if(res.error)alert(res.error.message);await renderDiscussion(submissionId);}
@@ -226,7 +227,7 @@ async function renderDiscussion(submissionId){
     if(act==='delete'){if(!confirm('Delete this comment?'))return;const res=await sb.from('comments').delete().eq('id',c.id);if(res.error)alert(res.error.message);await renderDiscussion(submissionId);}
   };
   cancel.onclick=()=>{parentId=null;replyLabel.textContent='';cancel.style.display='none';};
-  form.onsubmit=async ev=>{ev.preventDefault();const body=form.body.value.trim();if(!body)return;const author=form.author.value.trim().slice(0,40);if(!author){root.querySelector('#commentMsg').textContent='Enter a display name.';return;}const res=await sb.from('comments').insert({submission_id:submissionId,user_id:me.id,author_name:author,body,parent_id:parentId});if(res.error){root.querySelector('#commentMsg').textContent='Could not post comment: '+res.error.message;return;}await renderDiscussion(submissionId);};
+  form.onsubmit=async ev=>{ev.preventDefault();const body=form.body.value.trim();if(!body)return;const author=form.author.value.trim().slice(0,40);if(author)localStorage.setItem("peerReviewDisplayName",author);if(!author){root.querySelector('#commentMsg').textContent='Enter a display name.';return;}const res=await sb.from('comments').insert({submission_id:submissionId,user_id:me.id,author_name:author,body,parent_id:parentId});if(res.error){root.querySelector('#commentMsg').textContent='Could not post comment: '+res.error.message;return;}await renderDiscussion(submissionId);};
 }
 function closeRd(){const r=$("#rd");r.style.display="none";r.querySelector(".pg").innerHTML=""}
 $("#rd .x").onclick=closeRd;
@@ -238,7 +239,7 @@ $("#qf").onsubmit=async ev=>{ev.preventDefault();const f=ev.target;
 const sb=supabase.createClient(CFG.url,CFG.key);
 async function loadAll(){
   const [a,b]=await Promise.all([sb.from("stacks").select("*").order("created_at"),sb.from("submissions").select("*").order("created_at",{ascending:false})]);
-  if(a.error||b.error)return;
+  if(a.error||b.error){const problem=a.error||b.error;console.error("Could not load project data:",problem);$("#emsg").textContent="Could not load submissions: "+problem.message;$("#empty").style.display="grid";return;}
   stacks=a.data.map(x=>({id:x.id,l:x.label,title:x.title,p:x.body,m:x.max_marks,dl:x.deadline||"",t:x.color,at:+new Date(x.created_at)}));
   subs=b.data.map(x=>({id:x.id,sid:x.stack_id,uid:x.user_id,who:x.who,answer:x.answer_text||"",note:x.note||"",files:x.files||[],at:+new Date(x.created_at),late:x.late}));
   rebuild();
@@ -418,5 +419,5 @@ $("#guestEntry").onclick=async()=>{
 };
 $("#so").onclick=()=>sb.auth.signOut();
 sb.auth.onAuthStateChange((ev,session)=>{if(ev==="INITIAL_SESSION"||ev==="SIGNED_IN"||ev==="SIGNED_OUT")setTimeout(()=>enter(session),0)});
-setInterval(async()=>{if(me.id&&!dn){await loadAll();const opened=$("#rd").style.display==="block";const current=$("#discussion");if(opened&&current&&current.dataset.submission)await renderDiscussion(current.dataset.submission);}},20000);
+setInterval(async()=>{if(me.id&&!dn)await loadAll();},30000);
 </script></body></html>
