@@ -53,11 +53,11 @@ h2{margin:18px 0 0;font-size:clamp(24px,3.5vw,38px);letter-spacing:-.03em}
 #fm{position:fixed;inset:0;z-index:250;background:rgba(0,0,0,.55);display:none;place-items:center;padding:16px;overflow:auto}
 #fm .box{width:min(520px,100%)}#fm h3{margin:0}
 #au{position:fixed;inset:0;z-index:400;background:var(--bg);display:grid;place-items:center;padding:16px;overflow:auto}#au .box{width:min(400px,100%)}#au h3{margin:0;font-size:26px;letter-spacing:-.03em}
-#so{position:fixed;top:calc(env(safe-area-inset-top,0px) + 12px);right:16px;z-index:10;background:transparent;color:inherit;border:2px solid currentColor;border-radius:99px;padding:8px 16px;font-weight:500;display:none}
+#so{position:fixed;top:calc(env(safe-area-inset-top,0px) + 12px);right:16px;z-index:10;background:transparent;color:inherit;border:2px solid currentColor;border-radius:99px;padding:8px 16px;font-weight:500;display:none}\n#re:disabled{opacity:.5;cursor:not-allowed}#signedStatus.verified{color:#16803c}#signedStatus.unverified{color:#b45309}
 @media (prefers-reduced-motion:reduce){.page,#stage{transition-duration:.01s}.m>span,.r{transition:none!important}}
 </style></head><body>
 <div class="brand">UPSC Peer Review</div>
-<button id="so">Sign out</button>
+<div id="signedStatus" style="position:fixed;top:calc(env(safe-area-inset-top,0px) + 16px);right:125px;z-index:10;font-size:13px;font-weight:500;display:none"></div>\n<button id="so">Sign out</button>
 <button id="add">+ Post question</button>
 <div id="stage"><div id="col"></div></div>
 <div id="empty"><div>No questions yet.<br><small id="emsg">Connecting…</small></div></div>
@@ -68,7 +68,9 @@ h2{margin:18px 0 0;font-size:clamp(24px,3.5vw,38px);letter-spacing:-.03em}
 <label>Password<input name="pw" type="password" required minlength="8" autocomplete="current-password"></label>
 <div class="fl"><button class="btn" id="si">Sign in</button><button type="button" class="btn s" id="su" style="color:#111">Create account</button></div>
 <button type="button" id="fp" style="background:none;color:#111;text-decoration:underline;justify-self:start;padding:0">Forgot password?</button>
-<div class="msg" id="aum"></div></form></div>
+<button type="button" id="re" style="background:none;color:#111;text-decoration:underline;justify-self:start;padding:0">Resend confirmation email</button>
+<div class="msg" id="vstatus" role="status" aria-live="polite" style="font-weight:500"></div>
+<div class="msg" id="aum" role="status" aria-live="polite"></div></form></div>
 <div id="rd"><button class="x">Close</button><div class="pg"></div></div>
 <div id="fm"><form class="box" id="qf"><h3>Post a question</h3>
 <label>Paper / label<input name="l" required maxlength="30" placeholder="GS Paper II"></label>
@@ -190,25 +192,170 @@ async function loadAll(){
   rebuild();
 }
 async function enter(session){
-  const au=$("#au");
-  if(!session){au.style.display="grid";$("#so").style.display=$("#add").style.display="none";return}
-  au.style.display="none";const u=session.user;
+  const au=$("#au"),signedStatus=$("#signedStatus");
+  if(!session){
+    au.style.display="grid";
+    $("#so").style.display=$("#add").style.display="none";
+    signedStatus.style.display="none";
+    return;
+  }
+  au.style.display="none";
+  const u=session.user;
+  const verified=!!(u.email_confirmed_at||u.confirmed_at);
   me={id:u.id,name:(u.user_metadata&&u.user_metadata.full_name)||""};
+  signedStatus.style.display="block";
+  signedStatus.className=verified?"verified":"unverified";
+  signedStatus.textContent=verified?"Email verified ✓":"Email not verified";
   const r=await sb.from("admins").select("user_id").eq("user_id",u.id);
   admin=!!(r.data&&r.data.length);
   $("#so").style.display="block";$("#add").style.display=admin?"block":"none";
   $("#emsg").textContent=admin?"Use “Post question” to create the first stack.":"No questions have been posted yet.";
   await loadAll();
 }
-const aum=$("#aum");
-$("#auf").onsubmit=async ev=>{ev.preventDefault();const f=ev.target;aum.textContent="";
-  const r=await sb.auth.signInWithPassword({email:f.email.value.trim(),password:f.pw.value});
-  if(r.error)aum.textContent=r.error.message};
-$("#su").onclick=async()=>{const f=$("#auf");if(!f.reportValidity())return;
-  const r=await sb.auth.signUp({email:f.email.value.trim(),password:f.pw.value,options:{data:{full_name:f.name.value.trim()||"Aspirant"},emailRedirectTo:location.origin}});
-  aum.textContent=r.error?r.error.message:(r.data.session?"":"Check your email to confirm your account, then sign in.")};
-$("#fp").onclick=async()=>{const e=$("#auf").email.value.trim();if(!e){aum.textContent="Enter your email first.";return}
-  const r=await sb.auth.resetPasswordForEmail(e,{redirectTo:location.origin});aum.textContent=r.error?r.error.message:"Password reset email sent."};
+const aum=$("#aum"),vstatus=$("#vstatus"),resendBtn=$("#re");
+let resendSeconds=0,resendTimer=null,lastSignupEmail="";
+function setAuthMessage(message){aum.textContent=message;}
+function startResendCooldown(seconds=60){
+  resendSeconds=seconds;
+  resendBtn.disabled=true;
+  if(resendTimer)clearInterval(resendTimer);
+  const update=()=>{
+    resendBtn.textContent=resendSeconds>0
+      ?`Resend confirmation email (${resendSeconds}s)`
+      :"Resend confirmation email";
+    if(resendSeconds<=0){
+      clearInterval(resendTimer);
+      resendTimer=null;
+      resendBtn.disabled=false;
+    }else resendSeconds--;
+  };
+  update();
+  resendTimer=setInterval(update,1000);
+}
+function showAuthLinkError(){
+  const params=new URLSearchParams(location.search);
+  const hash=new URLSearchParams(location.hash.replace(/^#/,""));
+  const code=params.get("error_code")||hash.get("error_code")||"";
+  const description=(params.get("error_description")||hash.get("error_description")||"").replace(/\+/g," ");
+  if(code==="otp_expired"||/expired|invalid.*link|link.*invalid/i.test(description)){
+    vstatus.textContent="This confirmation link has expired or is invalid. Enter your email and use “Resend confirmation email” to request a fresh link.";
+    vstatus.style.color="#b45309";
+    return true;
+  }
+  if(code||description){
+    vstatus.textContent="Email confirmation could not be completed. Request a fresh confirmation email below.";
+    vstatus.style.color="#b45309";
+    return true;
+  }
+  return false;
+}
+showAuthLinkError();
+$("#auf").onsubmit=async ev=>{
+  ev.preventDefault();
+  const f=ev.target,email=f.email.value.trim();
+  aum.textContent="";
+  vstatus.textContent="";
+  const r=await sb.auth.signInWithPassword({email,password:f.pw.value});
+  if(r.error){
+    const msg=r.error.message||"";
+    if(/email not confirmed/i.test(msg)){
+      vstatus.textContent="Your email address is not verified yet. Check your inbox, or request a new confirmation email below.";
+      vstatus.style.color="#b45309";
+      lastSignupEmail=email;
+      setAuthMessage("After entering your email, click “Resend confirmation email”.");
+    }else if(/invalid login credentials/i.test(msg)){
+      setAuthMessage("Email or password is incorrect. If you have not confirmed your email, request a new confirmation link.");
+    }else setAuthMessage(msg);
+  }
+};
+$("#su").onclick=async()=>{
+  const f=$("#auf");
+  if(!f.reportValidity())return;
+  const email=f.email.value.trim();
+  lastSignupEmail=email;
+  setAuthMessage("Creating your account...");
+  vstatus.textContent="";
+  const r=await sb.auth.signUp({
+    email,
+    password:f.pw.value,
+    options:{
+      data:{full_name:f.name.value.trim()||"Aspirant"},
+      emailRedirectTo:location.origin
+    }
+  });
+  if(r.error){
+    const msg=r.error.message||"";
+    if(/already registered|already exists|user already|already been registered/i.test(msg)){
+      vstatus.textContent="An account may already exist with this email. Try signing in. If it is not confirmed, use the resend button.";
+      vstatus.style.color="#b45309";
+      setAuthMessage("");
+    }else setAuthMessage(msg);
+    return;
+  }
+  if(r.data.session){
+    vstatus.textContent="Your account is created and signed in.";
+    vstatus.style.color="#16803c";
+  }else{
+    vstatus.textContent="Account created. Check your inbox and spam folder for the confirmation email. If it does not arrive, use the resend button below.";
+    vstatus.style.color="#16803c";
+    startResendCooldown(60);
+  }
+};
+resendBtn.onclick=async()=>{
+  const email=$("#auf").email.value.trim()||lastSignupEmail;
+  if(!email){
+    setAuthMessage("Enter the email address you used to register first.");
+    $("#auf").email.focus();
+    return;
+  }
+  if(!$("#auf").email.checkValidity()){
+    setAuthMessage("Enter a valid email address.");
+    $("#auf").email.focus();
+    return;
+  }
+  if(resendSeconds>0)return;
+  resendBtn.disabled=true;
+  setAuthMessage("Requesting a new confirmation email...");
+  vstatus.textContent="";
+  try{
+    const {error}=await sb.auth.resend({
+      type:"signup",
+      email,
+      options:{emailRedirectTo:location.origin}
+    });
+    if(error){
+      const msg=error.message||"";
+      if(/already confirmed|already verified/i.test(msg)){
+        vstatus.textContent="This email is already confirmed. You can sign in normally.";
+        vstatus.style.color="#16803c";
+        setAuthMessage("");
+      }else if(/rate.?limit|too many requests|email rate limit/i.test(msg)){
+        setAuthMessage("Too many email requests. Please wait before trying again, or try later.");
+        startResendCooldown(60);
+      }else if(/expired|invalid.*token/i.test(msg)){
+        setAuthMessage("That confirmation link is no longer valid. Request a fresh confirmation email.");
+        resendBtn.disabled=false;
+      }else{
+        setAuthMessage("Could not resend confirmation email: "+msg);
+        resendBtn.disabled=false;
+      }
+    }else{
+      vstatus.textContent="A new confirmation email has been requested. Check your inbox and spam folder.";
+      vstatus.style.color="#16803c";
+      setAuthMessage("If the email does not arrive, wait for the countdown before requesting another.");
+      startResendCooldown(60);
+    }
+  }catch(err){
+    setAuthMessage("Could not resend email: "+(err.message||"Please try again later."));
+    resendBtn.disabled=false;
+  }
+};
+$("#fp").onclick=async()=>{
+  const e=$("#auf").email.value.trim();
+  if(!e){setAuthMessage("Enter your email first.");return;}
+  const r=await sb.auth.resetPasswordForEmail(e,{redirectTo:location.origin});
+  setAuthMessage(r.error?r.error.message:"Password reset email requested. Check your inbox and spam folder.");
+};
 $("#so").onclick=()=>sb.auth.signOut();
 sb.auth.onAuthStateChange((ev,session)=>{if(ev==="INITIAL_SESSION"||ev==="SIGNED_IN"||ev==="SIGNED_OUT")setTimeout(()=>enter(session),0)});
 setInterval(()=>{if(me.id&&!dn)loadAll()},20000);
